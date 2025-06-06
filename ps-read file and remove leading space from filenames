@@ -1,0 +1,173 @@
+<#
+.SYNOPSIS
+    Renames specified files by removing the first character of their filenames.
+.DESCRIPTION
+    This script processes a list of provided file paths. For each file, it removes the
+    first character of its name (filename + extension) and renames the file.
+    It includes a -WhatIf parameter to preview changes without applying them.
+    The script will skip renaming if the original filename has only one character (as removing it would result in an empty name)
+    or if a file with the new name already exists.
+.PARAMETER FullName
+    An array or file of full paths to the files that need to be renamed. This parameter is mandatory
+    and can accept input from the pipeline (e.g., from Get-ChildItem or Get-Content).
+.EXAMPLE
+**    .\rrspace.ps1 -FullName "C:\temp\1example.txt", "C:\data\2another.log"
+    Description: Attempts to rename "C:\temp\1example.txt" to "example.txt" and
+                 "C:\data\2another.log" to "another.log".
+
+.EXAMPLE
+    Get-ChildItem "C:\reports\*.tmp" | .\Rename-RemoveFirstChar.ps1
+    Description: Finds all .tmp files in "C:\reports\" and pipes them to the script
+                 to have their first character removed from their names.
+
+.EXAMPLE
+    Get-Content "C:\ListOfFilesToRename.txt" | .\Rename-RemoveFirstChar.ps1 -WhatIf
+    Description: Reads a list of file paths from "C:\ListOfFilesToRename.txt",
+                 and shows what renames would occur without actually performing them.
+                 Each line in the text file should be a full path to a file.
+
+.EXAMPLE
+    $fileList = @("C:\docs\Xfile1.docx", "C:\docs\_file2.pdf")
+    .\Rename-RemoveFirstChar.ps1 -FullName $fileList -Verbose
+    Description: Renames files specified in the $fileList array and provides verbose output.
+.EXAMPLE
+    Expected text file format of paths\files to be renamed (can also use mapped drive instead of \\<server>\<share>),
+        one path/file per line:
+    \\NJHYFS\depts\ENGIN\Doug R\Teterboro Airport Submittals\ Potential Spam   TEB - 914 205 United Water field meeting.msg
+    \\NJHYFS\depts\ScanDocuments\Direct_Debit\Daily Work\2016\JAN 2016\6\ 100_8957622222_01062016.pdf
+    b:\ENGIN\Doug R\Teterboro Airport Submittals\ Potential Spam   TEB - 914 205 United Water field meeting.msg
+    b:\ScanDocuments\Direct_Debit\Daily Work\2016\JAN 2016\6\ 100_8957622222_01062016.pdf
+.OUTPUTS
+    None by default, unless -Verbose or -WhatIf is used.
+    When -WhatIf is used, it outputs messages indicating what rename operations would occur.
+.NOTES
+    Author: Gemini
+    Date: 2025-05-19
+    It's highly recommended to run the script with -WhatIf first to ensure it targets the correct files
+    and the new names are as expected.
+    Files with names that are only one character long will be skipped.
+    If a file with the target new name already exists in the same directory, the rename
+      operation for that specific file will be skipped.
+#>
+[CmdletBinding(SupportsShouldProcess)] # Enables -WhatIf and -Confirm
+param (
+  [Parameter(Mandatory = $true, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true, Position = 0)]
+    [string[]]$SourceFile, # Accepts an array of file paths, also supports FullName property from piped FileInfo objects
+  [Parameter(Mandatory)]
+    [string]$logFilePrefix # date will be calculated and added in the next section in addition the extension .log
+)
+
+begin {
+  $begTime = Get-Date
+  $filesProcessedCount = 0
+  $filesRenamedCount = 0
+  $renameThese = Get-Content -Path $SourceFile
+  $warningFGcolor = "Yellow"
+  $warningBGcolor = "DarkRed"
+  $logupdateFGcolor = "White"
+  $logupdateBGcolor = "DarkBlue"
+  $logFilePrefix = $logFilePrefix + "-" + $((Get-Date).ToString('yyyy-MM-dd_HH-mm-ss')) + ".log"
+  
+  # Start-Transcript -Path $logFile
+  
+  #Write-Host "Script started, reading $SourceFile ($($renameThese.Count) files)." -ForegroundColor Green -BackgroundColor DarkGray
+  $logthis = "Script started $begtime, reading $SourceFile ($($renameThese.Count) files).`n"
+  $logthis | Tee-Object -FilePath $logFilePrefix -Append | Write-Host -ForegroundColor Green -BackgroundColor DarkGray
+}
+
+process {
+  foreach ($filePathInput in $renameThese) {
+    $filesProcessedCount++
+    #Write-Host "Processing input: '$filePathInput' `n($($filesProcessedCount) of $($renameThese.count))" -ForegroundColor Blue
+    $logthis = "Processing input: '$filePathInput' `n($($filesProcessedCount) of $($renameThese.count))"
+    $logthis | Tee-Object -FilePath $logFilePrefix -Append | Write-Host -ForegroundColor White
+    # Resolve the path to ensure it's a valid file path and get FileInfo object
+    try {
+        $FileItem = Get-Item -LiteralPath $filePathInput -ErrorAction Stop
+    }
+    catch {
+        $logthis = "'$filePathInput' could not be found or accessed. Error: $($_.Exception.Message).`n...Skipping"
+        #Write-Warning $logthis
+        $logthis | Tee-Object -FilePath $logFilePrefix -Append | Write-Host -ForegroundColor $warningFGcolor -BackgroundColor $warningBGcolor
+        continue
+    }
+
+    # Ensure it's a file, not a directory
+    if ($FileItem.GetType().Name -ne "FileInfo") {
+        $logthis = "'$($FileItem.Name)' is not a file, skipping..."
+        #Write-Warning "'$($FileItem.Name)' is not a file, skipping..."
+        $logthis | Tee-Object -FilePath $logFilePrefix -Append | Write-Host -ForegroundColor $warningFGcolor -BackgroundColor $warningBGcolor
+        continue
+    }
+
+    $OriginalFullName = $FileItem.FullName
+    $OriginalName = $FileItem.Name
+    $DirectoryPath = $FileItem.DirectoryName
+
+    # Check if the filename has enough characters to remove the first one
+    if ($OriginalName.Length -lt 2) {
+        $logthis = "File '$OriginalFullName' has a name '$OriginalName' which is too short (less than 2 characters) to remove the first character.`n...Skipping"
+        #Write-Warning $logthis
+        $logthis | Tee-Object -FilePath $logFilePrefix -Append | Write-Host -ForegroundColor $warningFGcolor -BackgroundColor $warningBGcolor
+        continue
+    }
+
+    # Generate the new name by removing the first character
+    $NewName = $OriginalName.TrimStart()
+
+    # This check is technically covered by the Length -lt 2, but good for clarity
+    #if ([string]::IsNullOrWhiteSpace($NewName)) {
+    #    Write-Warning "Skipping file '$OriginalFullName' as removing the first character would result in an empty filename."
+    #    continue
+    #}
+
+    # Construct the new full path
+    $NewFileFullName = Join-Path -Path $DirectoryPath -ChildPath $NewName
+
+    # Check if a file with the new name already exists
+    if (Test-Path -LiteralPath $NewFileFullName) {
+        $logthis = "Skipping rename of '$OriginalFullName': A file named '$NewName' already exists at '$DirectoryPath'"
+        #Write-Warning $logthis
+        $logthis | Tee-Object -FilePath $logFilePrefix -Append | Write-Host -ForegroundColor $warningFGcolor -BackgroundColor $warningBGcolor
+        continue
+    }
+
+    Write-Host "Preparing to rename '$OriginalName'`n to '$NewName' `nin directory '$DirectoryPath'" -ForegroundColor White
+
+    # Perform the rename operation, respecting -WhatIf
+    if ($PSCmdlet.ShouldProcess($OriginalFullName, "Rename to '$NewFileFullName' (removing first character)")) { 
+        try {
+          Rename-Item -LiteralPath $OriginalFullName -NewName $NewName -ErrorAction Stop
+          $logthis = "Successfully renamed: '$OriginalFullName' to '$NewFileFullName'"
+          $logthis | Tee-Object -FilePath $logFilePrefix -Append | Write-Host  -ForegroundColor $logupdateFGcolor -BackgroundColor $logupdateBGcolor
+          $filesRenamedCount++
+        }
+        catch {
+          #Write-Error "Failed to rename '$OriginalFullName' to '$NewName'.`n Error: $($_.Exception.Message)"
+          $logthis = "Failed to rename '$OriginalFullName' to '$NewName'. Error: $($_.Exception.Message)"
+          $logthis | Tee-Object -FilePath $logFilePrefix -Append | Write-Error
+        }
+    }
+  }
+}
+
+end {
+  Write-Host "Total files processed: $filesProcessedCount"
+
+  if ($PSCmdlet.WhatIfPreference) {
+      Write-Host "--- WhatIf Mode: No changes were made. ---"
+  } elseif ($filesRenamedCount -eq 0 -and $filesProcessedCount -gt 0) {
+      Write-Host "No files were renamed. Check warnings or verbose output for details."
+  } elseif ($filesProcessedCount -eq 0) {
+      Write-Host "No file paths were provided or found to process."
+  }
+  
+#  Stop-Transcript
+  $endTime = Get-Date
+  #$endTime
+  $totalTime = New-TimeSpan -Start $begTime -End $endTime | Select-Object -Property TotalSeconds, TotalMinutes  
+
+  #Write-Host "end of script; Total files successfully renamed: $filesRenamedCount" -ForegroundColor Green -backgroundColor DarkGray
+  $logthis = "`nend of script: $endTime `n$totalTime`nTotal files successfully renamed: $filesRenamedCount"
+  $logthis | Tee-Object -FilePath $logFilePrefix -Append | Write-Host -ForegroundColor Green -backgroundColor DarkGray
+}
