@@ -1,0 +1,170 @@
+#assign params from command line
+param(
+  [Alias("UNCPath")]
+  [Parameter(Mandatory)]
+    [string]$SourcePath,
+  [Alias("OFilePath")]
+  [Parameter(Mandatory)]
+    [string]$OutputFilePath
+)
+
+begin {
+  
+  $startTime = Get-Date
+
+  #create arrayLists to hold output from 3 tasks: 1) count, 2) get ACLs, 3) expand group membership
+  #$arrayListFolderCountResults = [System.Collections.ArrayList]@()
+  $arrayListACLs = [System.Collections.ArrayList]@()
+  #$arrayListGroupsToExpand = [System.Collections.ArrayList]@()
+
+  #.net List (for performance and mutability) of identity/group names to exclude (case-insensitive matching will be used)
+  #These are the "name parts" after any domain or "BUILTIN\" prefix.
+  $listExcludedGroups = [System.Collections.Generic.List[string]]@()
+    $listExcludedGroups.Add("Administrators")      # Matches BUILTIN\Administrators
+    $listExcludedGroups.Add("Authenticated Users") # Matches well-known group
+    $listExcludedGroups.Add("Backup_OPs")
+    $listExcludedGroups.Add("Domain Admins")       # Matches well-known group
+    $listExcludedGroups.Add("Domain Users")        # Matches well-known group
+    $listExcludedGroups.Add("NETWORK SERVICE")     # Matches well-known group
+    $listExcludedGroups.Add("SYSTEM")              # Matches NT AUTHORITY\SYSTEM
+    $listExcludedGroups.Add("CREATOR OWNER")       # Matches special identity
+    $listExcludedGroups.Add("Users")               # Matches BUILTIN\Users
+  
+  #get [only] folders (-Directory) under the source path for file counts and sizes
+#**  ACLs uses -Recurse: need to account for this
+#**   trying to avoid the perf hit of scanning the folders twice
+  #long paths
+  $longpath = '\\?\UNC'
+  $SourcePath = $longpath + $SourcePath
+  #$SourcePath
+  $FoldersArray = @(Get-ChildItem $SourcePath -Directory -Recurse) #**debug recurse is later
+  
+  #init empty result set if there are no folders
+  $Results = @()
+  if ($FoldersArray.Count -eq 0) {
+    $Results += [pscustomobject] @{
+      Path = $SourcePath
+      Count = 0
+      GBSize = 0.00
+      FolderDepth = 0
+    }
+  }
+
+  #init the folder depth counter used in the foreach loop
+  #$FoldersDeep = ($SourcePath -split '\\').Count - 2 #subtract for current (.) and parent (..)
+  
+  #new [pcustomobject] array for ACL results which will be the input to expand group members
+  $ACLOutInfo = @()
+
+  #new [pcustomobject] array for group member results
+  #$uniqueGroups = @()
+
+  #Write-Verbose "Script initialized. Excluded identities (case-insensitive): $($Global:ExcludedIdentities -join ', ')" -Verbose
+
+}
+
+process {
+
+  #loop through the folders for ACLs + file counts; write separate CSVs for each
+  ForEach ($currentFolder in $FoldersArray) {
+    #display the current path being evaluated (top level only for file counts)
+    write-host "FoldersArray loop: $($currentFolder.FullName)" -ForegroundColor Yellow -backgroundColor DarkGray
+ 
+    #extract the ACLs for each folder in this loop
+
+    #create a FolderInfo object (.net for speed)
+    $objCurrentFolderInfo = New-Object System.IO.DirectoryInfo($currentFolder.FullName) #must use "FullName" for the complete UNC path
+    $ACLs = $objCurrentFolderInfo.GetAccessControl()
+    <#alternatives
+      # $ACLs = [System.IO.Directory]::GetAccessControl($currentFolder.FullName)
+      # $ACLs = Get-Acl -Path $currentFolder.FullName -ErrorAction Stop
+      # $ACLs.Access | Format-Table
+    
+    #$ACLs.Access | Format-Table
+    #>
+    #exclude ACLs in the ExcludedGroups array (see "begin {}" section above)
+    ForEach ($accessRule in $ACLs.Access) {
+      <#
+      GetAccessRules($true, $true, [System.Security.Principal.NTAccount])) 
+      GetAccessRules()
+      The first boolean indicates that you want to include rules explicitly set on the object.
+      The second boolean indicates that you want to exclude inherited rules but it doesn't seem to work. [Bug?]
+      [System.Security.Principal.NTAccount] specifies that you want the IdentityReference
+       (like a username or group name) to be translated into an NTAccount object, making it easily readable.
+      #>
+      #$ACLs.Access | Format-Table
+      
+      #only ACLs that are not inherited
+      if ($accessRule.IsInherited -eq $false) {
+
+        $thisGroupName = $accessRule.IdentityReference.Value
+    #Write-host "thisGroupName = $thisGroupName" -ForegroundColor Green -backgroundColor DarkGray
+        # Extract the GroupName, e.g., "Administrators" from "BUILTIN\Administrators" or "SalesUsers" from "CONTOSO\SalesUsers"
+        $thisShortGroupName = $thisGroupName.Split('\')[-1]
+        #$thisShortGroupName
+
+        # Check if the ShortGroupName is in the exclusion list (PowerShell -eq is case-insensitive for strings)
+        $IsExcluded = $false
+        ForEach ($ExcludedItem in $listExcludedGroups) {
+          #test for exclusion
+          if ($thisShortGroupName -eq $ExcludedItem) {
+            $IsExcluded = $true
+    #Write-host "Excluding '$thisGroupName' because '$ExcludedItem' is in the exclusion list." -ForegroundColor Yellow -backgroundColor DarkBlue
+            break
+          }
+        } #end excluded groups loop
+
+        if (-not $IsExcluded) {          
+          #save this group for group member expansion
+          $ACLOutInfo += [pscustomobject]@{
+            FolderPath = $currentFolder.FullName
+            IdentityReference = $thisGroupName
+            #AccessControlType = $ACL.AccessControlType
+            #IsInherited = $ACL.IsInherited
+            #InheritanceFlags = $ACL.InheritanceFlags
+            #PropagationFlags = $ACL.PropagationFlags
+            FileSystemRights = $accessRule.FileSystemRights
+          }
+          <#
+          $arrayListGroupsToExpand.Add($thisShortGroupName) #ArrayList because it won't be exported to CSV
+          **Use the IdentityReference from the $ACLOutInfo array for the groups to be expanded?
+          #>
+
+          #add non-inherited, non-excluded ACL to array list
+          $arrayListACLs.Add($ACLOutInfo)
+          # write-host$arrayListACLs
+    #      Write-Host "  File System Rights: $($accessRule.FileSystemRights)"
+    #      Write-Host "  Is Inherited: $($accessRule.IsInherited)"
+    #      Write-Host "  Identity Reference: $thisGroupName"
+          #Write-Host "  File System Rights: $($accessRule.FileSystemRights)"
+    #      Write-Host "  Inheritance Flags: $($accessRule.InheritanceFlags)"
+          #Write-Host "  Access Control Type: $($accessRule.AccessControlType)"   
+          #Write-Host "  Propagation Flags: $($accessRule.PropagationFlags)"
+    #      Write-Host "-----------------------------------"
+          #**
+        } #endif IsExcluded
+      
+      } else {
+   #Write-Host "     skipping this rule (inherited) for $thisGroupName" -ForegroundColor Yellow -BackgroundColor DarkRed
+        }
+      #endif IsInherited
+   #Write-host "looping for next access rule in $($currentFolder.FullName)" -ForegroundColor Green -backgroundColor DarkGray
+    } #end access rules loop
+  } #end currentFolder loop
+} #end process
+
+end {
+
+  #create output filename (ACLs)
+  $OutFile = $OutputFilePath + "acls-" + $((Get-Date).ToString('yyyy-MM-dd_HH-mm-ss')) + ".csv"
+  #Save results to csv file
+  $ACLOutInfo | Export-Csv $OutFile -NoTypeInformation
+  Write-host "saving $OutFile..." -ForegroundColor Green -backgroundColor DarkBlue
+#  $ACLOutInfo | Export-Csv -Path "G:\My Drive\tmp\myarrayList.csv" -NoTypeInformation
+#>
+  $endTime = Get-Date
+  New-TimeSpan -Start $startTime -End $endTime | Select-Object -Property TotalSeconds, TotalMinutes
+  
+  Write-Host "end of script" -ForegroundColor Green -backgroundColor DarkGray
+
+}
