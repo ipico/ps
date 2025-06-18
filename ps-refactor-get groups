@@ -149,7 +149,7 @@ process {
 end {
 
   #create OutFile (ACLs)
-  $OutFile = $OutputFilePath + "acls-" + $((Get-Date).ToString('yyyy-MM-dd_HH-mm-ss')) + ".csv"
+  $OutFile = $OutputFilePath + "-acls-" + $((Get-Date).ToString('yyyy-MM-dd_HH-mm-ss')) + ".csv"
   #Save results to csv file
 #  $ACLOutInfo | Export-Csv -Path "G:\My Drive\tmp\myarrayList.csv" -NoTypeInformation
   $ACLOutInfo | Export-Csv $OutFile -NoTypeInformation
