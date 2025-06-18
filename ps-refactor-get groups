@@ -50,26 +50,11 @@ begin {
   #
   #$SourcePath #**debug
   $FoldersArray = @(Get-ChildItem $SourcePath -Directory -Recurse)# -Recurse) #**debug recurse is later
-  
-  #init empty result set if there are no folders
-  $Results = @()
-  if ($FoldersArray.Count -eq 0) {
-    $Results += [pscustomobject] @{
-      Path = $SourcePath
-      Count = 0
-      GBSize = 0.00
-      FolderDepth = 0
-    }
-  }
 
-  #init the folder depth counter used in the foreach loop
-  #$FoldersDeep = ($SourcePath -split '\\').Count - 2 #subtract for current (.) and parent (..)
-  
   #new [pcustomobject] array for ACL results which will be the input to expand group members
   $ACLOutInfo = @()
 
   #Write-Verbose "Script initialized. Excluded identities (case-insensitive): $($Global:ExcludedIdentities -join ', ')" -Verbose
-
 }
 #end "begin block"
 
